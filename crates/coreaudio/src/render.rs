@@ -115,10 +115,14 @@ pub unsafe extern "C" fn feed(
     let Some(unit) = crate::unit_for(userdata) else {
         return;
     };
-    // The lock is held across the guest's callback deliberately: `AudioUnitStop`
-    // and `AudioComponentInstanceDispose` take it too, so a guest cannot free
-    // what it is being asked to fill.
-    let mut unit = unit.lock().unwrap_or_else(|e| e.into_inner());
+    // Keep the unit locked across guest rendering to protect its callback.
+    // SDL owns the stream lock here; a control call may hold the unit lock
+    // while waiting for that stream, so this callback must not wait.
+    let mut unit = match unit.try_lock() {
+        Ok(unit) => unit,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
     if !unit.running {
         return;
     }
